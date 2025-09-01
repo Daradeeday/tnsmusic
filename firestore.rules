@@ -1,0 +1,47 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // หัวบิลการจองรายวันของผู้ใช้
+    match /users/{uid}/bookings/{dayKey} {
+      allow read: if true;
+
+      allow create: if signedIn()
+        && uid == request.auth.uid
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.bandName is string
+        && request.resource.data.dayKey == dayKey
+        && request.resource.data.startAt is timestamp
+        && request.resource.data.endAt is timestamp
+        // ≤ 3 ชั่วโมง
+        && request.resource.data.endAt <= request.resource.data.startAt + duration.value(3, 'h')
+        // ภายใน 3 วันจาก "ตอนนี้" และไม่ย้อนหลัง
+        && request.resource.data.startAt >= request.time
+        && request.resource.data.startAt <= (request.time + duration.value(3, 'd'));
+
+      allow update, delete: if false;
+    }
+
+    // สล็อต 5 นาที (กันเวลาทับกัน)
+    match /slots/{slotId} {
+      allow read: if true;
+
+      allow create: if signedIn()
+        && request.resource.data.userId == request.auth.uid
+        && request.resource.data.bandName is string
+        && request.resource.data.dayKey is string
+        && request.resource.data.startAt is timestamp
+        // ต้องยาว 5 นาทีพอดี
+        && request.resource.data.endAt == request.resource.data.startAt + duration.value(5, 'm')
+        // ภายใน 3 วันจาก "ตอนนี้"
+        && request.resource.data.startAt >= request.time
+        && request.resource.data.startAt <= (request.time + duration.value(3, 'd'));
+
+      allow update, delete: if false;
+    }
+  }
+}
