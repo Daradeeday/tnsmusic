@@ -7,13 +7,15 @@
       "DOM",
       "DOM.Iterable"
     ],
+    "types": [
+      "vite/client",
+      "node"
+    ],
     "module": "ESNext",
     "skipLibCheck": true,
     "moduleResolution": "bundler",
     "resolveJsonModule": true,
-    "isolatedModules": true,
-    "noEmit": true,
-    "jsx": "react-jsx",
+    // "types" moved above to include both "vite/client" and "node"
     "types": [
       "vite/client"
     ]
