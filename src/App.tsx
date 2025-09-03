@@ -231,10 +231,13 @@ function Countdown19Card(){
         <span>นับถอยหลังสู่วันที่ 19</span>
         <span className="pill">{d === 0 ? 'วันนี้!' : `อีก ${d} วัน`}</span>
       </div>
-      <div className="muted">ใกล้จะถึงวันงานแล้ว ขอให้ทุกวงสู้ ๆ ✨</div>
+      <div className="muted">ใกล้จะถึงวันงานแล้ว ขอให้ทุกวงสู้ ๆ ✨ </div>
     </div>
   )
 }
+
+// รายชื่อวงที่ให้เลือก
+const BANDS = ["Sinnoble", "flychicken", "ส้นตีน", "POET", "zhyphilis"] as const;
 
 
 
@@ -402,9 +405,10 @@ useEffect(() => {
       return;
     }
     if (!bandName.trim()) {
-      toast.error("จองไม่สำเร็จ", "กรุณากรอกชื่อวง");
-      return;
-    }
+  toast.error("จองไม่สำเร็จ", "กรุณาเลือกชื่อวง");
+  return;
+}
+
     setLoading(true);
     try {
       await createBookingClient({ db, uid: user.uid, bandName: bandName.trim(), start: startDate, end: endDate });
@@ -490,9 +494,22 @@ useEffect(() => {
 
             <div className="form-grid">
               <div className="field">
-                <label htmlFor="bandName">ชื่อวง</label>
-                <input id="bandName" value={bandName} onChange={(e) => setBandName(e.target.value)} placeholder="เช่น TNS Band" />
-              </div>
+  <label htmlFor="bandName">ชื่อวง</label>
+  <select
+    id="bandName"
+    value={bandName}
+    onChange={(e) => setBandName(e.target.value)}
+    required
+    aria-label="เลือกชื่อวง"
+  >
+    <option value="" disabled>— เลือกชื่อวง —</option>
+    {BANDS.map((b) => (
+      <option key={b} value={b}>{b}</option>
+    ))}
+  </select>
+</div>
+
+
               <div className="field">
                 <label htmlFor="date">วันที่ (วันนี้ ถึง {maxDate})</label>
                 <input id="date" type="date" value={date} min={minDate} max={maxDate} onChange={(e) => setDate(e.target.value)} />
@@ -586,7 +603,7 @@ useEffect(() => {
           </section>
         </div>
         {/* สถิติ */}
-<section className="card" id="stats" aria-labelledby="stats-title">
+<section className="card stat-card" id="stats" aria-labelledby="stats-title">
   <h2 id="stats-title" className="card-title">สถิติผู้ซ้อมเยอะที่สุด</h2>
 
   {loadingLeaders ? (
@@ -594,43 +611,36 @@ useEffect(() => {
   ) : leaders.length === 0 ? (
     <div className="muted">ยังไม่มีข้อมูล</div>
   ) : (
-    <>
-      {/* Top 1–3 แบบเด่น */}
-      <ol className="leader-top3">
-        {leaders.slice(0, 3).map((p, i) => (
-          <li key={p.userId}>
-            <span className="rank">{i === 0 ? "🥇" : i === 1 ? "🥈" : "🥉"}</span>
-            <span className="name">{p.bandName || p.userId}</span>
-            <span className="mins">{formatDuration(p.minutes)}</span>
+    <ul className="stat-list" role="list">
+      {leaders.map((p: any, i: number) => {
+        const name = p.bandName || p.userId;
+        const sessions = p.sessions ?? "-";
+        const gainText = `+${formatDuration(p.minutes)}`;    // ใช้ helper เดิม
+        const rank = i + 1;
+        const initials = (name || "?").trim().charAt(0).toUpperCase();
+
+        return (
+          <li key={p.userId} className={`stat-item ${i === 0 ? "highlight" : ""}`}>
+            <div className="stat-left">
+              <div className={`stat-avatar ${i === 0 ? "glow" : ""}`} aria-hidden>
+                <span>{initials}</span>
+              </div>
+              <div className="stat-meta">
+                <div className="stat-name">{name}</div>
+                <div className="stat-sub">รวม {sessions} ครั้ง</div>
+              </div>
+            </div>
+            <div className="stat-right">
+              <span className="stat-gain">{gainText}</span>
+              <span className="stat-rank">#{rank}</span>
+            </div>
           </li>
-        ))}
-      </ol>
-
-      {/* อันดับถัดไปทั้งหมดเรียงลงมา */}
-      {leaders.length > 3 && (
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr><th>อันดับ</th><th>วง/ผู้ใช้</th><th>เวลารวม</th><th>ครั้ง</th></tr>
-            </thead>
-            <tbody>
-              {leaders.slice(3).map((p, idx) => (
-                <tr key={p.userId}>
-                  <td>{idx + 4}</td>
-                  <td>{p.bandName || p.userId}</td>
-                  <td>{formatDuration(p.minutes)}</td>
-                  <td>{p.sessions || "-"}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          
-
-        </div>
-      )}
-    </>
+        );
+      })}
+    </ul>
   )}
 </section>
+
 <LoadingOverlay open={loading} />
 
 {/* Account */}
