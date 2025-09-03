@@ -1,7 +1,7 @@
 // แก้ import: เอา writeBatch ออก ใส่ runTransaction เข้าไป
 import {
   doc, getDoc, runTransaction, serverTimestamp, Timestamp,
-  collection, query, where, getDocs
+  collection, query, where, getDocs ,collectionGroup
 } from 'firebase/firestore'
 import { format } from 'date-fns'
 
@@ -113,4 +113,72 @@ export async function listBookingsForDay(db: any, dayKey: string){
   })
 
   return Array.from(map.values()).sort((a,b) => a.startAt.toMillis() - b.startAt.toMillis())
+}
+
+
+export type Leader = {
+  userId: string
+  bandName?: string
+  minutes: number
+  sessions: number
+}
+
+function toDate(ts: any): Date {
+  return ts?.toDate ? ts.toDate() : (ts instanceof Date ? ts : new Date(ts))
+}
+
+export function formatDuration(mins: number) {
+  const h = Math.floor(mins / 60)
+  const m = mins % 60
+  return h > 0 ? `${h} ชม. ${m} นาที` : `${m} นาที`
+}
+
+/**
+ * รวมเวลาซ้อมของทุกคน (นาที) จาก bookings ทั้งหมด
+ * - พยายามใช้ collectionGroup('bookings') ก่อน (เร็ว/เบา)
+ * - ถ้าเครื่องผู้ใช้ยังไม่รองรับ/ติด index → fallback ไปที่คอลเลกชัน 'slots' (คิด 5 นาทีต่อสล็อต)
+ */
+export async function listTopUsersByMinutes(db: any, limit?: number) {
+  const agg = new Map<string, Leader>()
+
+  try {
+    // วิธีหลัก: รวมจากหัวบิลของทุกคน (ไม่ใส่ where/order จึงไม่ต้อง composite index)
+    const snap = await getDocs(collectionGroup(db, 'bookings'))
+    snap.forEach((docSnap) => {
+      const d: any = docSnap.data()
+      const s = toDate(d.startAt)
+      const e = toDate(d.endAt)
+      const min = Math.max(0, Math.round((e.getTime() - s.getTime()) / 60000))
+      const u = d.userId || 'unknown'
+      const cur = agg.get(u) || { userId: u, bandName: d.bandName, minutes: 0, sessions: 0 }
+      cur.minutes += min
+      cur.sessions += 1
+      if (d.bandName && !cur.bandName) cur.bandName = d.bandName
+      agg.set(u, cur)
+    })
+  } catch (_e) {
+    // วิธีสำรอง: รวมจาก 'slots' (เอกสารละ 5 นาที) + นับ sessions จาก groupId
+    const groupsByUser = new Map<string, Set<string>>()
+    const sSnap = await getDocs(collection(db, 'slots'))
+    sSnap.forEach((docSnap) => {
+      const d: any = docSnap.data()
+      const u = d.userId || 'unknown'
+      const cur = agg.get(u) || { userId: u, bandName: d.bandName, minutes: 0, sessions: 0 }
+      cur.minutes += 5
+      if (d.bandName && !cur.bandName) cur.bandName = d.bandName
+      agg.set(u, cur)
+
+      const g = d.groupId || `${d.userId || 'u'}_${d.dayKey || ''}`
+      const set = groupsByUser.get(u) || new Set<string>()
+      set.add(g)
+      groupsByUser.set(u, set)
+    })
+    // เติมจำนวน sessions จาก groupId ที่ไม่ซ้ำ
+    for (const [u, info] of agg) {
+      info.sessions = groupsByUser.get(u)?.size || info.sessions
+    }
+  }
+
+  const arr = Array.from(agg.values()).sort((a, b) => b.minutes - a.minutes)
+  return typeof limit === 'number' ? arr.slice(0, limit) : arr
 }

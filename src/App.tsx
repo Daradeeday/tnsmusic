@@ -10,7 +10,7 @@ import {
   signOut,
   browserPopupRedirectResolver ,
 } from "firebase/auth";
-import { createBookingClient, listBookingsForDay } from "./booking";
+import { createBookingClient, listBookingsForDay, listTopUsersByMinutes, formatDuration } from "./booking";
 import { buildGCalUrl } from "./calendar";
 import { format } from "date-fns";
 import "./app.css";
@@ -85,6 +85,7 @@ function EmailLogin({ onDone }: { onDone?: () => void }) {
   const [mode, setMode] = useState<"signin" | "signup">("signin");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string>("");
+  
 
   async function submit() {
     setBusy(true);
@@ -135,6 +136,95 @@ function EmailLogin({ onDone }: { onDone?: () => void }) {
     </div>
   );
 }
+// == Helpers: Days until next 19th ==
+function daysUntilNext19th(base = new Date()): number {
+  const y = base.getFullYear();
+  const m = base.getMonth();
+  const d = base.getDate();
+  // เป้าหมาย = วันที่ 19 ของเดือนนี้ หากวันนี้เกิน 19 แล้ว ให้เป็นเดือนถัดไป
+  let target = new Date(y, m, 19, 0, 0, 0, 0);
+  if (d > 19) target = new Date(y, m + 1, 19, 0, 0, 0, 0);
+
+  // นับเป็นจำนวน "วัน" แบบปัดขึ้น (อีก 0 วัน = วันนี้)
+  const ms = target.getTime() - new Date(y, m, d, 0, 0, 0, 0).getTime();
+  const days = Math.ceil(ms / (1000 * 60 * 60 * 24));
+  return Math.max(0, days);
+}
+
+// == Modal: Countdown to 19th ==
+function Days19Modal({
+  open,
+  days,
+  onClose,
+}: {
+  open: boolean;
+  days: number;
+  onClose: () => void;
+}) {
+  if (!open) return null;
+  const title = days === 0 ? "วันนี้วันที่ 19!" : `อีก ${days} วัน ถึงวันที่ 19`;
+  const note = "ใกล้จะขึ้นแล้ว ขอให้ทุกวงสู้ ๆ ✨";
+
+  return (
+    <div className="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="d19-title">
+      <div className="modal-card">
+        <div className="modal-head">
+          <h3 id="d19-title" className="modal-title">{title}</h3>
+          <button className="modal-close" aria-label="ปิด" onClick={onClose}>✕</button>
+        </div>
+        <p className="modal-text">{note}</p>
+        <div className="modal-actions">
+          <button className="btn primary" onClick={onClose}>ปิด</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+function withRipple(e: React.MouseEvent<HTMLElement>) {
+  const btn = e.currentTarget as HTMLElement;
+  // ลบ ripple เก่าที่ค้าง
+  btn.querySelectorAll('.ripple').forEach(el => el.remove());
+
+  const rect = btn.getBoundingClientRect();
+  const size = Math.max(rect.width, rect.height);
+  const span = document.createElement('span');
+  span.className = 'ripple';
+  span.style.width = span.style.height = `${size}px`;
+  span.style.left = `${e.clientX - rect.left - size/2}px`;
+  span.style.top  = `${e.clientY - rect.top - size/2}px`;
+  btn.appendChild(span);
+
+  // เก็บกวาดหลังแอนิเมชัน
+  setTimeout(() => span.remove(), 650);
+}
+
+/* === Loading Overlay === */
+function LoadingOverlay({
+  open,
+  title = "กำลังบันทึกการจอง...",
+  subtitle = "โปรดรอสักครู่ ระบบกำลังตรวจสอบเงื่อนไขและบันทึกข้อมูล",
+}: {
+  open: boolean;
+  title?: string;
+  subtitle?: string;
+}) {
+  if (!open) return null;
+  return (
+    <div className="loading-backdrop" role="alertdialog" aria-modal="true" aria-live="assertive">
+      <div className="loading-card">
+        <div className="loading-spinner" aria-hidden />
+        <div className="loading-texts">
+          <div className="loading-title">{title}</div>
+          <div className="loading-sub">{subtitle}</div>
+          <div className="loading-hint">
+            เคล็ดลับ: หลีกเลี่ยงเวลาทับกับคนอื่น และเว้นอย่างน้อย 2 วันตามกติกา
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 export default function App() {
   const [user, setUser] = useState<any>(auth.currentUser);
@@ -143,9 +233,50 @@ export default function App() {
   const [startTime, setStartTime] = useState("13:00");
   const [durationMin, setDurationMin] = useState(60);
   const [loading, setLoading] = useState(false);
+  const [showD19, setShowD19] = useState(false);
+const [daysD19, setDaysD19] = useState(0);
+
   const [rows, setRows] = useState<BookingRow[]>([]);
 
   const toast = useToast();
+  const [leaders, setLeaders] = useState<any[]>([]);
+const [loadingLeaders, setLoadingLeaders] = useState(true);
+useEffect(() => {
+  try {
+    const dismissed = sessionStorage.getItem("dismiss-d19") === "1";
+    if (!dismissed) {
+      const d = daysUntilNext19th(new Date());
+      setDaysD19(d);
+      setShowD19(true);
+    }
+  } catch {
+    // เงียบไว้หาก sessionStorage ใช้ไม่ได้
+    const d = daysUntilNext19th(new Date());
+    setDaysD19(d);
+    setShowD19(true);
+  }
+}, []);
+useEffect(() => {
+  document.documentElement.classList.toggle("is-loading", loading);
+  return () => document.documentElement.classList.remove("is-loading");
+}, [loading]);
+
+
+useEffect(() => {
+  (async () => {
+    try {
+      setLoadingLeaders(true);
+      const data = await listTopUsersByMinutes(db); // ทั้งหมด เรียงมาก→น้อย
+      setLeaders(data);
+    } catch (e: any) {
+      console.error(e);
+      toast.error("โหลดสถิติไม่สำเร็จ", e?.message);
+    } finally {
+      setLoadingLeaders(false);
+    }
+  })();
+}, []);
+
 
   useEffect(() => auth.onAuthStateChanged((u) => setUser(u)), []);
 
@@ -358,6 +489,53 @@ export default function App() {
             </div>
           </section>
         </div>
+        {/* สถิติ */}
+<section className="card" id="stats" aria-labelledby="stats-title">
+  <h2 id="stats-title" className="card-title">สถิติผู้ซ้อมเยอะที่สุด</h2>
+
+  {loadingLeaders ? (
+    <div className="muted">กำลังโหลด…</div>
+  ) : leaders.length === 0 ? (
+    <div className="muted">ยังไม่มีข้อมูล</div>
+  ) : (
+    <>
+      {/* Top 1–3 แบบเด่น */}
+      <ol className="leader-top3">
+        {leaders.slice(0, 3).map((p, i) => (
+          <li key={p.userId}>
+            <span className="rank">{i === 0 ? "🥇" : i === 1 ? "🥈" : "🥉"}</span>
+            <span className="name">{p.bandName || p.userId}</span>
+            <span className="mins">{formatDuration(p.minutes)}</span>
+          </li>
+        ))}
+      </ol>
+
+      {/* อันดับถัดไปทั้งหมดเรียงลงมา */}
+      {leaders.length > 3 && (
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr><th>อันดับ</th><th>วง/ผู้ใช้</th><th>เวลารวม</th><th>ครั้ง</th></tr>
+            </thead>
+            <tbody>
+              {leaders.slice(3).map((p, idx) => (
+                <tr key={p.userId}>
+                  <td>{idx + 4}</td>
+                  <td>{p.bandName || p.userId}</td>
+                  <td>{formatDuration(p.minutes)}</td>
+                  <td>{p.sessions || "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          
+
+        </div>
+      )}
+    </>
+  )}
+</section>
+<LoadingOverlay open={loading} />
       </main>
 
       <footer className="site-footer">
@@ -365,6 +543,15 @@ export default function App() {
           <small className="muted">© {new Date().getFullYear()} TNS Music — Booking · ติดต่อผู้ดูแล IG <a className="btn link" href="https://instagram.com/dxday_.dxch" target="_blank" rel="noreferrer">@dxday_.dxch</a></small>
         </div>
       </footer>
+      <Days19Modal
+  open={showD19}
+  days={daysD19}
+  onClose={() => {
+    try { sessionStorage.setItem("dismiss-d19", "1"); } catch {}
+    setShowD19(false);
+  }}
+/>
+
     </div>
   );
 }
