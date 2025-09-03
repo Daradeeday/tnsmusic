@@ -182,3 +182,128 @@ export async function listTopUsersByMinutes(db: any, limit?: number) {
   const arr = Array.from(agg.values()).sort((a, b) => b.minutes - a.minutes)
   return typeof limit === 'number' ? arr.slice(0, limit) : arr
 }
+
+// === Stats & Booking helpers (ต่อท้ายไฟล์เดิม) ===
+
+// แปลง Date เป็น slot id (ช่องละ 5 นาที)
+function slotId(dayKey: string, dt: Date) {
+  const hh = String(dt.getHours()).padStart(2, '0')
+  const mm = String(dt.getMinutes()).padStart(2, '0')
+  return `${dayKey}_${hh}${mm}`
+}
+function* iterate5MinSlots(start: Date, end: Date) {
+  const ms = 5 * 60 * 1000
+  for (let t = start.getTime(); t < end.getTime(); t += ms) {
+    const s = new Date(t)
+    const e = new Date(Math.min(t + ms, end.getTime()))
+    yield [s, e] as [Date, Date]
+  }
+}
+function sameDayKey(a: Date, b: Date) {
+  return a.getFullYear() === b.getFullYear() &&
+         a.getMonth() === b.getMonth() &&
+         a.getDate() === b.getDate()
+}
+
+export async function getMyUpcomingBookings(db: any, uid: string) {
+  // อ่านเฉพาะของ user นี้ (subcollection ไม่ต้อง index เสริมถ้าไม่ filter ซับซ้อน)
+  const snap = await getDocs(collection(db, `users/${uid}/bookings`))
+  const now = new Date()
+  const items = snap.docs.map(d => ({ id: d.id, ...d.data() as any }))
+    .filter(b => {
+      const s = b.startAt?.toDate ? b.startAt.toDate() : new Date(b.startAt)
+      return s.getTime() >= now.setHours(0,0,0,0) // วันนี้และอนาคต
+    })
+    .sort((a,b) => {
+      const sa = (a.startAt?.toDate ? a.startAt.toDate() : new Date(a.startAt)).getTime()
+      const sb = (b.startAt?.toDate ? b.startAt.toDate() : new Date(b.startAt)).getTime()
+      return sa - sb
+    })
+  return items
+}
+
+/**
+ * แก้ไขเวลาการจองของตนเอง (วันเดิมเท่านั้น)
+ * - ห้ามแก้ถ้า booking เป็นอดีต (เช่น เมื่อวาน/ก่อนหน้า/ก่อนเวลาปัจจุบันของวันนี้)
+ * - ระยะเวลาใหม่ <= 180 นาที
+ * - ต้องไม่ทับกับ slot ของคนอื่น
+ * - แก้ไขโดยลบ slot เก่า + เขียน slot ใหม่ ภายใน transaction
+ */
+export async function updateBookingTime(db: any, params: {
+  uid: string,
+  dayKey: string,
+  newStart: Date,
+  newEnd: Date,
+}) {
+  const { uid, dayKey, newStart, newEnd } = params
+  if (newEnd <= newStart) throw new Error('เวลาสิ้นสุดต้องหลังเวลาเริ่ม')
+  const durationMin = Math.round((newEnd.getTime() - newStart.getTime()) / 60000)
+  if (durationMin > 180) throw new Error('ระยะเวลาเกิน 3 ชั่วโมง')
+
+  const today0 = new Date(); today0.setHours(0,0,0,0)
+
+  const bookingRef = doc(db, `users/${uid}/bookings/${dayKey}`)
+
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(bookingRef)
+    if (!snap.exists()) throw new Error('ไม่พบการจอง')
+
+    const b: any = snap.data()
+    const oldStart: Date = b.startAt?.toDate ? b.startAt.toDate() : new Date(b.startAt)
+    const oldEnd: Date = b.endAt?.toDate ? b.endAt.toDate() : new Date(b.endAt)
+
+    // ห้ามแก้ถ้าเดิมเป็นอดีต (เมื่อวาน/ก่อนหน้า/หรือผ่านไปแล้วของวันนี้)
+    if (oldEnd.getTime() < Date.now() || oldStart < today0) {
+      throw new Error('ไม่สามารถแก้ไขการจองที่ผ่านมาแล้ว')
+    }
+
+    // บังคับแก้ "วันเดิม" เท่านั้น
+    if (!sameDayKey(oldStart, newStart) || !sameDayKey(oldStart, newEnd)) {
+      throw new Error('เปลี่ยนวันไม่ได้ อนุญาตแก้ได้เฉพาะเวลาในวันเดิม')
+    }
+
+    // เตรียม slot เดิม (คำนวณจากเวลาเดิม)
+    const oldSlots = Array.from(iterate5MinSlots(oldStart, oldEnd)).map(([s]) => doc(db, `slots/${slotId(dayKey, s)}`))
+    // ตรวจ slot ใหม่ว่าทับกับคนอื่นหรือไม่
+    const newSlotRefs = Array.from(iterate5MinSlots(newStart, newEnd)).map(([s]) => doc(db, `slots/${slotId(dayKey, s)}`))
+    for (const ref of newSlotRefs) {
+      const ds = await tx.get(ref)
+      if (ds.exists()) {
+        const owner = ds.get('userId')
+        if (owner && owner !== uid) {
+          throw new Error('เวลาที่เลือกทับกับผู้อื่น')
+        }
+      }
+    }
+
+    // ลบ slot เดิม
+    for (const ref of oldSlots) {
+      const ds = await tx.get(ref)
+      if (ds.exists() && ds.get('userId') === uid) {
+        tx.delete(ref)
+      }
+    }
+
+    // เขียน slot ใหม่
+    for (const [s, e] of iterate5MinSlots(newStart, newEnd)) {
+      const ref = doc(db, `slots/${slotId(dayKey, s)}`)
+      tx.set(ref, {
+        userId: uid,
+        bandName: b.bandName,
+        dayKey,
+        startAt: s,
+        endAt: e,
+        groupId: b.groupId || `${uid}_${dayKey}`,
+        createdAt: serverTimestamp(),
+      })
+    }
+
+    // อัปเดตหัวบิล
+    tx.set(bookingRef, {
+      ...b,
+      startAt: newStart,
+      endAt: newEnd,
+      updatedAt: serverTimestamp(),
+    }, { merge: true })
+  })
+}

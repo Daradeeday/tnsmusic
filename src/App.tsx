@@ -10,9 +10,10 @@ import {
   signOut,
   browserPopupRedirectResolver ,
 } from "firebase/auth";
-import { createBookingClient, listBookingsForDay, listTopUsersByMinutes, formatDuration } from "./booking";
+import { getMyUpcomingBookings, updateBookingTime ,createBookingClient, listBookingsForDay, listTopUsersByMinutes, formatDuration } from "./booking";
 import { buildGCalUrl } from "./calendar";
 import { format } from "date-fns";
+
 import "./app.css";
 
 type BookingRow = { id: string; bandName: string; startAt: any; endAt: any; userId: string };
@@ -138,17 +139,11 @@ function EmailLogin({ onDone }: { onDone?: () => void }) {
 }
 // == Helpers: Days until next 19th ==
 function daysUntilNext19th(base = new Date()): number {
-  const y = base.getFullYear();
-  const m = base.getMonth();
-  const d = base.getDate();
-  // เป้าหมาย = วันที่ 19 ของเดือนนี้ หากวันนี้เกิน 19 แล้ว ให้เป็นเดือนถัดไป
-  let target = new Date(y, m, 19, 0, 0, 0, 0);
-  if (d > 19) target = new Date(y, m + 1, 19, 0, 0, 0, 0);
-
-  // นับเป็นจำนวน "วัน" แบบปัดขึ้น (อีก 0 วัน = วันนี้)
-  const ms = target.getTime() - new Date(y, m, d, 0, 0, 0, 0).getTime();
-  const days = Math.ceil(ms / (1000 * 60 * 60 * 24));
-  return Math.max(0, days);
+ const y = base.getFullYear(), m = base.getMonth(), d = base.getDate()
+  let target = new Date(y, m, 19, 0,0,0,0)
+  if (d > 19) target = new Date(y, m+1, 19, 0,0,0,0)
+  const ms = target.getTime() - new Date(y, m, d, 0,0,0,0).getTime()
+  return Math.max(0, Math.ceil(ms / 86400000))
 }
 
 // == Modal: Countdown to 19th ==
@@ -226,6 +221,23 @@ function LoadingOverlay({
 }
 
 
+function Countdown19Card(){
+  const [now, setNow] = useState(new Date())
+  useEffect(()=>{ const t = setInterval(()=>setNow(new Date()), 1000); return ()=>clearInterval(t) },[])
+  const d = daysUntilNext19th(now)
+  return (
+    <div className="card" style={{background:'transparent', borderStyle:'dashed'}}>
+      <div className="card-title" style={{display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+        <span>นับถอยหลังสู่วันที่ 19</span>
+        <span className="pill">{d === 0 ? 'วันนี้!' : `อีก ${d} วัน`}</span>
+      </div>
+      <div className="muted">ใกล้จะถึงวันงานแล้ว ขอให้ทุกวงสู้ ๆ ✨</div>
+    </div>
+  )
+}
+
+
+
 export default function App() {
   const [user, setUser] = useState<any>(auth.currentUser);
   const [bandName, setBandName] = useState("");
@@ -235,11 +247,47 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [showD19, setShowD19] = useState(false);
 const [daysD19, setDaysD19] = useState(0);
+const [userMap, setUserMap] = useState<Record<string, {displayName?: string, photoURL?: string}>>({})
+
 
   const [rows, setRows] = useState<BookingRow[]>([]);
+// Account
+const [profileName, setProfileName] = useState<string>(auth.currentUser?.displayName || "");
+const [profilePhoto, setProfilePhoto] = useState<string>(auth.currentUser?.photoURL || "");
+const [myBookings, setMyBookings] = useState<any[]>([]);
+const [editingId, setEditingId] = useState<string | null>(null);
+const [editStart, setEditStart] = useState<string>("");  // HH:mm
+const [editDur, setEditDur] = useState<number>(60);      // นาที
+useEffect(()=>{
+  (async()=>{
+    const ids = Array.from(new Set(rows.map((r:any)=>r.userId).filter(Boolean)))
+    if (ids.length === 0) { setUserMap({}); return }
+    const { getDoc, doc } = await import("firebase/firestore")
+    const map: Record<string, any> = {}
+    for (const id of ids){
+      try{
+        const s = await getDoc(doc(db, `users/${id}`))
+        if (s.exists()) map[id] = s.data()
+      }catch{}
+    }
+    setUserMap(map)
+  })()
+}, [rows])
+
+// โหลดรายการของฉันเมื่อมี user
+useEffect(() => {
+  (async () => {
+    if (!user) { setMyBookings([]); return }
+    const list = await getMyUpcomingBookings(db, user.uid)
+    setMyBookings(list)
+  })()
+}, [user])
 
   const toast = useToast();
   const [leaders, setLeaders] = useState<any[]>([]);
+  function pad2(n:number){ return String(n).padStart(2,'0') }
+function parseHM(hm: string){ const [h,m] = hm.split(':').map(Number); return {h: h||0, m: m||0} }
+
 const [loadingLeaders, setLoadingLeaders] = useState(true);
 useEffect(() => {
   try {
@@ -379,39 +427,65 @@ useEffect(() => {
       <ToastHost items={toast.toasts} onClose={toast.dismiss} />
 
       <header className="site-header">
-        <div className="container header-inner">
-          <h1 className="site-title">จองห้องซ้อมดนตรี</h1>
-          <div className="auth-bar">
-            {!user ? (
-              isInAppBrowser() ? (
-                <>
-                  <EmailLogin onDone={() => toast.success("เข้าสู่ระบบด้วยอีเมลสำเร็จ")} />
-                  <button className="btn ghost" onClick={openExternally}>ต้องการใช้ Google? เปิดด้วย Chrome/Safari</button>
-                </>
-              ) : (
-                <>
-                  <button className="btn primary" onClick={handleGoogleLogin}>เข้าสู่ระบบด้วย Google</button>
-                  <span className="muted">หรือ</span>
-                  <EmailLogin onDone={() => toast.success("เข้าสู่ระบบด้วยอีเมลสำเร็จ")} />
-                </>
-              )
-            ) : (
-              <>
-                <span className="pill" title={user.email}>👤 {user.displayName || user.email}</span>
-                <button className="btn ghost" onClick={logout}>ออกจากระบบ</button>
-              </>
-            )}
-            <div className="header-ig">
-              ผู้ดูแล: <a href="https://instagram.com/dxday_.dxch" target="_blank" rel="noreferrer">@dxday_.dxch</a>
-            </div>
-          </div>
-        </div>
-      </header>
+  <div className="container header-inner">
+    {/* Brand */}
+    <a href="#" className="brand" aria-label="TNS Music Home">
+      <span className="brand-mark" aria-hidden />
+      <span className="brand-text">
+        <span className="brand-name">TNS Music</span>
+        <span className="brand-sub">Room Booking</span>
+      </span>
+    </a>
+
+    <div className="header-spacer" />
+
+    {/* Actions (auth + links) */}
+    <div className="header-actions">
+      <div className="auth-bar">
+        {!user ? (
+          isInAppBrowser() ? (
+            <>
+              <EmailLogin onDone={() => toast.success("เข้าสู่ระบบด้วยอีเมลสำเร็จ")} />
+              <button className="btn ghost" onClick={openExternally}>ใช้ Google? เปิดด้วย Chrome/Safari</button>
+            </>
+          ) : (
+            <>
+              <button className="btn primary" onClick={handleGoogleLogin}>เข้าสู่ระบบด้วย Google</button>
+              <span className="muted">หรือ</span>
+              <EmailLogin onDone={() => toast.success("เข้าสู่ระบบด้วยอีเมลสำเร็จ")} />
+            </>
+          )
+        ) : (
+          <>
+            <span className="pill user-pill" title={user.email}>
+              <img
+                src={user.photoURL || userMap[user?.uid || ""]?.photoURL || "https://avatars.githubusercontent.com/u/0?v=4"}
+                alt=""
+                className="avatar-xxs"
+              />
+              {user.displayName || user.email}
+            </span>
+            <a className="btn subtle" href="#account">Account</a>
+            <button className="btn ghost" onClick={logout}>ออกจากระบบ</button>
+          </>
+        )}
+        <a className="ig-link" href="https://instagram.com/dxday_.dxch" target="_blank" rel="noreferrer">
+          @dxday_.dxch
+        </a>
+      </div>
+    </div>
+  </div>
+
+  {/* Hairline gradient like macOS */}
+  <div className="header-border" aria-hidden />
+</header>
+
 
       <main className="container">
         <div className="grid">
           {/* ฟอร์มการจอง */}
-          <section className="card card-form" aria-labelledby="form-title">
+          <section className="card card-form" id="booking" aria-labelledby="form-title">
+
             <h2 id="form-title" className="card-title">สร้างการจอง</h2>
 
             <div className="form-grid">
@@ -471,19 +545,41 @@ useEffect(() => {
                   {rows.length === 0 && (
                     <tr><td colSpan={2}><span className="muted">ยังไม่มีการจอง</span></td></tr>
                   )}
-                  {rows.map((r: any) => {
-                    const s = r.startAt?.toDate ? r.startAt.toDate() : new Date(r.startAt);
-                    const e = r.endAt?.toDate ? r.endAt.toDate() : new Date(r.endAt);
-                    const key = (r.userId || "u") + "_" + (r.dayKey || dayKey);
-                    return (
-                      <tr key={key}>
-                        <td data-label="วง">{r.bandName}</td>
-                        <td data-label="เวลา">
-                          {s.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} – {e.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                  {rows.length === 0 && (
+  <tr><td colSpan={2}><span className="muted">ยังไม่มีการจอง</span></td></tr>
+)}
+{rows.map((r: any) => {
+  const s = r.startAt?.toDate ? r.startAt.toDate() : new Date(r.startAt);
+  const e = r.endAt?.toDate ? r.endAt.toDate() : new Date(r.endAt);
+  const key = (r.userId || "u") + "_" + (r.dayKey || dayKey);
+  const name = userMap[r.userId]?.displayName || r.bandName;
+  const photo = userMap[r.userId]?.photoURL;
+
+  return (
+    <tr key={key}>
+      <td data-label="วง">
+        <div className="cell-user">
+          {photo && (
+            <img
+              src={photo}
+              alt=""
+              className="avatar-xs"
+            />
+          )}
+          <div className="cell-user-text">
+            <div className="name">{name}</div>
+            {name !== r.bandName && <div className="muted sub">{r.bandName}</div>}
+          </div>
+        </div>
+      </td>
+      <td data-label="เวลา">
+        {s.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} –{" "}
+        {e.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+      </td>
+    </tr>
+  );
+})}
+
                 </tbody>
               </table>
             </div>
@@ -536,6 +632,123 @@ useEffect(() => {
   )}
 </section>
 <LoadingOverlay open={loading} />
+
+{/* Account */}
+<section className="card" id="account" aria-labelledby="account-title">
+  <h2 id="account-title" className="card-title">บัญชีของฉัน</h2>
+
+  {!user ? (
+    <div className="muted">กรุณาเข้าสู่ระบบเพื่อจัดการบัญชี</div>
+  ) : (
+    <>
+      {/* โปรไฟล์ */}
+      <div className="grid" style={{gridTemplateColumns:'120px 1fr'}}>
+        <div style={{display:'flex', alignItems:'center', justifyContent:'center'}}>
+          <img
+            src={profilePhoto || user.photoURL || 'https://avatars.githubusercontent.com/u/0?v=4'}
+            alt="avatar" width={96} height={96}
+            style={{borderRadius: '16px', border: '1px solid var(--line)', objectFit: 'cover'}}
+          />
+        </div>
+        <div>
+          <div className="field">
+            <label>ชื่อโปรไฟล์</label>
+            <input value={profileName} onChange={e=>setProfileName(e.target.value)} placeholder="เช่น TNS Band" />
+          </div>
+          <div className="field">
+            <label>ลิงก์รูปโปรไฟล์</label>
+            <input value={profilePhoto} onChange={e=>setProfilePhoto(e.target.value)} placeholder="https://..." />
+          </div>
+          <div className="actions">
+            <button
+              className="btn primary"
+              onClick={async ()=>{
+                try{
+                  const { updateProfile } = await import("firebase/auth")
+                  if (!auth.currentUser) throw new Error("ยังไม่ได้เข้าสู่ระบบ")
+                  await updateProfile(auth.currentUser, { displayName: profileName || undefined, photoURL: profilePhoto || undefined })
+                  // บันทึกลง Firestore ด้วย เพื่อใช้ join ในตารางหน้าแรก
+                  const { doc, setDoc, serverTimestamp } = await import("firebase/firestore")
+                  await setDoc(doc(db, `users/${auth.currentUser.uid}`), {
+                    displayName: profileName || null,
+                    photoURL: profilePhoto || null,
+                    updatedAt: serverTimestamp(),
+                  }, { merge: true })
+                  toast.success("บันทึกโปรไฟล์สำเร็จ")
+                }catch(e:any){ toast.error("บันทึกโปรไฟล์ไม่สำเร็จ", e?.message) }
+              }}
+            >บันทึกโปรไฟล์</button>
+          </div>
+        </div>
+      </div>
+
+      <hr style={{border:'none', borderTop:'1px solid var(--line)', margin:'14px 0'}} />
+
+      {/* Countdown ถึงวันที่ 19 */}
+      <Countdown19Card />
+
+      <hr style={{border:'none', borderTop:'1px solid var(--line)', margin:'14px 0'}} />
+
+      {/* การจองของฉัน */}
+      <h3 style={{margin:'0 0 8px'}}>การจองของฉัน (วันนี้และอนาคต)</h3>
+      {myBookings.length === 0 ? (
+        <div className="muted">ยังไม่มีการจอง</div>
+      ) : (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>วันที่</th><th>เวลา</th><th>จัดการ</th></tr></thead>
+            <tbody>
+              {myBookings.map(b=>{
+                const s: Date = b.startAt?.toDate ? b.startAt.toDate() : new Date(b.startAt)
+                const e: Date = b.endAt?.toDate ? b.endAt.toDate() : new Date(b.endAt)
+                const canEdit = e.getTime() >= Date.now() && s.setHours(0,0,0,0) >= new Date().setHours(0,0,0,0)
+                const hm = `${pad2(s.getHours())}:${pad2(s.getMinutes())}`
+                const dur = Math.round((e.getTime() - s.getTime())/60000)
+
+                return (
+                  <tr key={b.id}>
+                    <td>{b.dayKey}</td>
+                    <td>{hm} – {pad2(e.getHours())}:{pad2(e.getMinutes())}</td>
+                    <td>
+                      {editingId === b.id ? (
+                        <div style={{display:'flex', gap:8, alignItems:'center', flexWrap:'wrap'}}>
+                          <input type="time" value={editStart || hm} onChange={e=>setEditStart(e.target.value)} />
+                          <input type="number" min={30} max={180} step={5} value={editDur || dur} onChange={e=>setEditDur(parseInt(e.target.value||'0'))} />
+                          <button className="btn primary" onClick={async ()=>{
+                            try{
+                              const base = new Date(b.dayKey + 'T00:00:00')
+                              const {h,m} = parseHM(editStart || hm)
+                              const newStart = new Date(base.getFullYear(), base.getMonth(), base.getDate(), h, m, 0, 0)
+                              const newEnd = new Date(newStart.getTime() + (editDur || dur)*60000)
+                              await updateBookingTime(db, { uid: user.uid, dayKey: b.dayKey, newStart, newEnd })
+                              toast.success("แก้ไขเวลาสำเร็จ")
+                              setEditingId(null)
+                              const list = await getMyUpcomingBookings(db, user.uid); setMyBookings(list)
+                            }catch(e:any){
+                              toast.error("แก้ไขเวลาไม่สำเร็จ", e?.message)
+                            }
+                          }}>บันทึก</button>
+                          <button className="btn ghost" onClick={()=>setEditingId(null)}>ยกเลิก</button>
+                        </div>
+                      ) : (
+                        <button className="btn link" disabled={!canEdit} onClick={()=>{
+                          setEditingId(b.id); setEditStart(hm); setEditDur(dur)
+                        }}>
+                          {canEdit ? 'แก้เวลาจอง' : 'แก้ไม่ได้ (อดีต)'}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                )
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  )}
+</section>
+
       </main>
 
       <footer className="site-footer">
