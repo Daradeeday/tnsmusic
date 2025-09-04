@@ -773,7 +773,6 @@ try {
         {canEdit ? 'แก้เวลาจอง' : 'แก้ไม่ได้ (อดีต)'}
       </button>
 
-      {/* ปุ่มลบ */}
       <button
         className="btn ghost"
         disabled={!canEdit}
