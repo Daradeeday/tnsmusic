@@ -769,7 +769,67 @@ try {
                           {canEdit ? 'แก้เวลาจอง' : 'แก้ไม่ได้ (อดีต)'}
                         </button>
                       )}
+                      <td>
+  {editingId === b.id ? (
+    /* ... บล็อกแก้ไขเดิม ... */
+  ) : (
+    <div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
+      <button
+        className="btn link"
+        disabled={!canEdit}
+        onClick={() => { setEditingId(b.id); setEditStart(hm); setEditDur(dur); }}
+      >
+        {canEdit ? 'แก้เวลาจอง' : 'แก้ไม่ได้ (อดีต)'}
+      </button>
                     </td>
+                    <td>
+  {editingId === b.id ? (
+    /* ... บล็อกแก้ไขเดิม ... */
+  ) : (
+    <div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
+      <button
+        className="btn link"
+        disabled={!canEdit}
+        onClick={() => { setEditingId(b.id); setEditStart(hm); setEditDur(dur); }}
+      >
+        {canEdit ? 'แก้เวลาจอง' : 'แก้ไม่ได้ (อดีต)'}
+      </button>
+
+      {/* ปุ่มลบ */}
+      <button
+        className="btn ghost"
+        disabled={!canEdit}
+        onClick={async () => {
+          if (!canEdit) return;
+          const ok = confirm(`ยืนยันลบการจองวันที่ ${b.dayKey} เวลา ${hm} ?`);
+          if (!ok) return;
+          try {
+            setLoading(true);
+            const { deleteMyBooking } = await import('./booking');
+            await deleteMyBooking(db, { uid: user.uid, dayKey: b.dayKey });
+            toast.success('ลบการจองสำเร็จ');
+
+            // รีเฟรชรายการของฉัน
+            const list = await getMyUpcomingBookings(db, user.uid);
+            setMyBookings(list);
+
+            // ถ้าหน้า “ตารางของวัน” ตรงกับรายการที่ลบอยู่ ให้รีเฟรชด้วย
+            if (b.dayKey === dayKey) {
+              setRows((await listBookingsForDay(db, dayKey)) as any);
+            }
+          } catch (e: any) {
+            toast.error('ลบไม่สำเร็จ', e?.message || String(e));
+          } finally {
+            setLoading(false);
+          }
+        }}
+      >
+        ลบการจอง
+      </button>
+    </div>
+  )}
+</td>
+
                   </tr>
                 )
               })}
