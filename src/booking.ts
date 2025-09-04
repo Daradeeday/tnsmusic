@@ -320,26 +320,85 @@ export async function updateBookingTime(db: any, params: {
   newEnd: Date,
 }) {
   const { uid, dayKey, newStart, newEnd } = params
+
   if (newEnd <= newStart) throw new Error('เวลาสิ้นสุดต้องหลังเวลาเริ่ม')
   const durationMin = Math.round((newEnd.getTime() - newStart.getTime()) / 60000)
   if (durationMin > 180) throw new Error('ระยะเวลาเกิน 3 ชั่วโมง')
 
   const today0 = new Date(); today0.setHours(0,0,0,0)
-
   const bookingRef = doc(db, `users/${uid}/bookings/${dayKey}`)
 
   await runTransaction(db, async (tx) => {
+    // ---------- READS (ทั้งหมดต้องเกิดก่อนเขียน) ----------
     const snap = await tx.get(bookingRef)
     if (!snap.exists()) throw new Error('ไม่พบการจอง')
 
     const b: any = snap.data()
     const oldStart: Date = b.startAt?.toDate ? b.startAt.toDate() : new Date(b.startAt)
-    const oldEnd: Date = b.endAt?.toDate ? b.endAt.toDate() : new Date(b.endAt)
+    const oldEnd: Date   = b.endAt?.toDate ? b.endAt.toDate() : new Date(b.endAt)
 
-    // ห้ามแก้ถ้าเดิมเป็นอดีต (เมื่อวาน/ก่อนหน้า/หรือผ่านไปแล้วของวันนี้)
     if (oldEnd.getTime() < Date.now() || oldStart < today0) {
       throw new Error('ไม่สามารถแก้ไขการจองที่ผ่านมาแล้ว')
     }
+    if (!sameDayKey(oldStart, newStart) || !sameDayKey(oldStart, newEnd)) {
+      throw new Error('เปลี่ยนวันไม่ได้ อนุญาตแก้ได้เฉพาะเวลาในวันเดิม')
+    }
+
+    // เตรียม refs สำหรับสล็อตเก่า/ใหม่
+    const oldSlotRefs = Array.from(iterate5MinSlots(oldStart, oldEnd))
+      .map(([s]) => doc(db, `slots/${slotId(dayKey, s)}`))
+
+    const newSlots = Array.from(iterate5MinSlots(newStart, newEnd))
+      .map(([s, e]) => ({ s, e, ref: doc(db, `slots/${slotId(dayKey, s)}`) }))
+
+    // อ่านเอกสารที่ต้องตรวจสอบทั้งหมดล่วงหน้า
+    const [oldSnaps, newSnaps] = await Promise.all([
+      Promise.all(oldSlotRefs.map(r => tx.get(r))),
+      Promise.all(newSlots.map(ns => tx.get(ns.ref))),
+    ])
+
+    // ตรวจว่า "สล็อตใหม่" ไม่ทับของคนอื่น
+    newSnaps.forEach((ds) => {
+      if (ds.exists()) {
+        const owner = ds.get('userId')
+        if (owner && owner !== uid) {
+          throw new Error('เวลาที่เลือกทับกับผู้อื่น')
+        }
+      }
+    })
+
+    // ---------- WRITES (เริ่มเขียนหลังอ่านครบแล้วเท่านั้น) ----------
+    // ลบสล็อตเก่าที่เป็นของเรา (จากผลอ่าน oldSnaps)
+    oldSlotRefs.forEach((ref, i) => {
+      const ds = oldSnaps[i]
+      if (!ds.exists() || ds.get('userId') === uid) {
+        tx.delete(ref)
+      }
+    })
+
+    // สร้างสล็อตใหม่
+    newSlots.forEach(({ s, e, ref }) => {
+      tx.set(ref, {
+        userId: uid,
+        bandName: b.bandName,
+        dayKey,
+        startAt: s,
+        endAt: e,
+        groupId: b.groupId || `${uid}_${dayKey}`,
+        createdAt: serverTimestamp(),
+      })
+    })
+
+    // อัปเดตหัวบิล
+    tx.set(bookingRef, {
+      ...b,
+      startAt: newStart,
+      endAt: newEnd,
+      updatedAt: serverTimestamp(),
+    }, { merge: true })
+  })
+}
+
 
     // บังคับแก้ "วันเดิม" เท่านั้น
     if (!sameDayKey(oldStart, newStart) || !sameDayKey(oldStart, newEnd)) {
