@@ -130,47 +130,46 @@ export async function createBookingClient({
 }
 
 // ลบการจองของตัวเอง (วันเดิมเท่านั้น) — ลบได้เฉพาะปัจจุบัน/อนาคต
+// --- แทนที่ deleteMyBooking ทั้งฟังก์ชัน ---
 export async function deleteMyBooking(db: any, params: {
   uid: string,
   dayKey: string,
 }) {
   const { uid, dayKey } = params;
   const bookingRef = doc(db, `users/${uid}/bookings/${dayKey}`);
-
   const today0 = new Date(); today0.setHours(0,0,0,0);
 
   await runTransaction(db, async (tx) => {
+    // READS
     const snap = await tx.get(bookingRef);
     if (!snap.exists()) throw new Error('ไม่พบการจอง');
 
     const b: any = snap.data();
-
-    // เจ้าของเท่านั้น
     if ((b.userId || uid) !== uid) throw new Error('ไม่มีสิทธิ์ลบการจองนี้');
 
-    const oldStart: Date = b.startAt?.toDate ? b.startAt.toDate() : new Date(b.startAt);
-    const oldEnd: Date   = b.endAt?.toDate   ? b.endAt.toDate()   : new Date(b.endAt);
-
-    // ห้ามลบอดีต: ถ้าจบไปแล้ว หรือต่ำกว่าวันนี้
-    if (oldEnd.getTime() < Date.now() || oldStart < today0) {
+    const s0 = toDateAny(b.startAt);
+    const e0 = toDateAny(b.endAt);
+    if (e0.getTime() < Date.now() || s0 < today0) {
       throw new Error('ไม่สามารถลบการจองที่ผ่านมาแล้ว');
     }
 
-    // ลบ slot ทั้งหมดของช่วงนั้น
-    for (const [s] of iterate5MinSlots(oldStart, oldEnd)) {
-      const ref = doc(db, `slots/${slotId(dayKey, s)}`);
-      const ds = await tx.get(ref);
-      if (ds.exists() && ds.get('userId') === uid) {
-        tx.delete(ref);
-      }
-    }
+    const slotRefs = Array.from(iterate5MinSlots(s0, e0))
+      .map(([s]) => doc(db, `slots/${slotId(dayKey, s)}`));
 
-    // ลบหัวบิล
+    const slotSnaps = await Promise.all(slotRefs.map(r => tx.get(r)));
+
+    // WRITES
+    slotRefs.forEach((ref, i) => {
+      const ds = slotSnaps[i];
+      if (!ds.exists() || ds.get('userId') === uid) tx.delete(ref);
+    });
+
     tx.delete(bookingRef);
   });
 
   return { ok: true, dayKey };
 }
+
 
 
 // (คงเวอร์ชันนี้ไว้) อ่านตารางจาก 'slots' → ไม่ต้องสร้าง index
@@ -313,152 +312,82 @@ export async function getMyUpcomingBookings(db: any, uid: string) {
  * - ต้องไม่ทับกับ slot ของคนอื่น
  * - แก้ไขโดยลบ slot เก่า + เขียน slot ใหม่ ภายใน transaction
  */
+// --- แทนที่ updateBookingTime ทั้งฟังก์ชัน ---
 export async function updateBookingTime(db: any, params: {
   uid: string,
   dayKey: string,
   newStart: Date,
   newEnd: Date,
 }) {
-  const { uid, dayKey, newStart, newEnd } = params
+  const { uid, dayKey, newStart, newEnd } = params;
 
-  if (newEnd <= newStart) throw new Error('เวลาสิ้นสุดต้องหลังเวลาเริ่ม')
-  const durationMin = Math.round((newEnd.getTime() - newStart.getTime()) / 60000)
-  if (durationMin > 180) throw new Error('ระยะเวลาเกิน 3 ชั่วโมง')
+  if (newEnd <= newStart) throw new Error('เวลาสิ้นสุดต้องหลังเวลาเริ่ม');
+  const durationMin = Math.round((newEnd.getTime() - newStart.getTime()) / 60000);
+  if (durationMin > 180) throw new Error('ระยะเวลาเกิน 3 ชั่วโมง');
 
-  const today0 = new Date(); today0.setHours(0,0,0,0)
-  const bookingRef = doc(db, `users/${uid}/bookings/${dayKey}`)
+  const today0 = new Date(); today0.setHours(0,0,0,0);
+  const bookingRef = doc(db, `users/${uid}/bookings/${dayKey}`);
 
   await runTransaction(db, async (tx) => {
-    // ---------- READS (ทั้งหมดต้องเกิดก่อนเขียน) ----------
-    const snap = await tx.get(bookingRef)
-    if (!snap.exists()) throw new Error('ไม่พบการจอง')
+    // ---------- READS ----------
+    const snap = await tx.get(bookingRef);
+    if (!snap.exists()) throw new Error('ไม่พบการจอง');
 
-    const b: any = snap.data()
-    const oldStart: Date = b.startAt?.toDate ? b.startAt.toDate() : new Date(b.startAt)
-    const oldEnd: Date   = b.endAt?.toDate ? b.endAt.toDate() : new Date(b.endAt)
+    const b: any = snap.data();
+    const oldStart: Date = toDateAny(b.startAt);
+    const oldEnd:   Date = toDateAny(b.endAt);
 
     if (oldEnd.getTime() < Date.now() || oldStart < today0) {
-      throw new Error('ไม่สามารถแก้ไขการจองที่ผ่านมาแล้ว')
+      throw new Error('ไม่สามารถแก้ไขการจองที่ผ่านมาแล้ว');
     }
     if (!sameDayKey(oldStart, newStart) || !sameDayKey(oldStart, newEnd)) {
-      throw new Error('เปลี่ยนวันไม่ได้ อนุญาตแก้ได้เฉพาะเวลาในวันเดิม')
+      throw new Error('เปลี่ยนวันไม่ได้ อนุญาตแก้ได้เฉพาะเวลาในวันเดิม');
     }
 
-    // เตรียม refs สำหรับสล็อตเก่า/ใหม่
     const oldSlotRefs = Array.from(iterate5MinSlots(oldStart, oldEnd))
-      .map(([s]) => doc(db, `slots/${slotId(dayKey, s)}`))
+      .map(([s]) => doc(db, `slots/${slotId(dayKey, s)}`));
 
     const newSlots = Array.from(iterate5MinSlots(newStart, newEnd))
-      .map(([s, e]) => ({ s, e, ref: doc(db, `slots/${slotId(dayKey, s)}`) }))
+      .map(([s, e]) => ({ s, e, ref: doc(db, `slots/${slotId(dayKey, s)}`) }));
 
-    // อ่านเอกสารที่ต้องตรวจสอบทั้งหมดล่วงหน้า
     const [oldSnaps, newSnaps] = await Promise.all([
       Promise.all(oldSlotRefs.map(r => tx.get(r))),
       Promise.all(newSlots.map(ns => tx.get(ns.ref))),
-    ])
+    ]);
 
-    // ตรวจว่า "สล็อตใหม่" ไม่ทับของคนอื่น
     newSnaps.forEach((ds) => {
       if (ds.exists()) {
-        const owner = ds.get('userId')
-        if (owner && owner !== uid) {
-          throw new Error('เวลาที่เลือกทับกับผู้อื่น')
-        }
+        const owner = ds.get('userId');
+        if (owner && owner !== uid) throw new Error('เวลาที่เลือกทับกับผู้อื่น');
       }
-    })
+    });
 
-    // ---------- WRITES (เริ่มเขียนหลังอ่านครบแล้วเท่านั้น) ----------
-    // ลบสล็อตเก่าที่เป็นของเรา (จากผลอ่าน oldSnaps)
+    // ---------- WRITES ----------
     oldSlotRefs.forEach((ref, i) => {
-      const ds = oldSnaps[i]
-      if (!ds.exists() || ds.get('userId') === uid) {
-        tx.delete(ref)
-      }
-    })
+      const ds = oldSnaps[i];
+      // ลบทิ้งได้แม้เอกสารไม่มีอยู่ (ปลอดภัย)
+      if (!ds.exists() || ds.get('userId') === uid) tx.delete(ref);
+    });
 
-    // สร้างสล็อตใหม่
     newSlots.forEach(({ s, e, ref }) => {
       tx.set(ref, {
         userId: uid,
+        bandKey: b.bandKey || makeBandKey(b.bandName || ''),
         bandName: b.bandName,
         dayKey,
-        startAt: s,
-        endAt: e,
+        startAt: Timestamp.fromDate(s),
+        endAt:   Timestamp.fromDate(e),
         groupId: b.groupId || `${uid}_${dayKey}`,
         createdAt: serverTimestamp(),
-      })
-    })
+      });
+    });
 
-    // อัปเดตหัวบิล
     tx.set(bookingRef, {
       ...b,
-      startAt: newStart,
-      endAt: newEnd,
+      bandKey: b.bandKey || makeBandKey(b.bandName || ''),
+      startAt: Timestamp.fromDate(newStart),
+      endAt:   Timestamp.fromDate(newEnd),
       updatedAt: serverTimestamp(),
-    }, { merge: true })
-  })
-}
-
-
-    // บังคับแก้ "วันเดิม" เท่านั้น
-    if (!sameDayKey(oldStart, newStart) || !sameDayKey(oldStart, newEnd)) {
-      throw new Error('เปลี่ยนวันไม่ได้ อนุญาตแก้ได้เฉพาะเวลาในวันเดิม')
-    }
-
-    // เตรียม slot เดิม (คำนวณจากเวลาเดิม)
-    const oldSlots = Array.from(iterate5MinSlots(oldStart, oldEnd)).map(([s]) => doc(db, `slots/${slotId(dayKey, s)}`))
-    // ตรวจ slot ใหม่ว่าทับกับคนอื่นหรือไม่
-    const newSlotRefs = Array.from(iterate5MinSlots(newStart, newEnd)).map(([s]) => doc(db, `slots/${slotId(dayKey, s)}`))
-    for (const ref of newSlotRefs) {
-      const ds = await tx.get(ref)
-      if (ds.exists()) {
-        const owner = ds.get('userId')
-        if (owner && owner !== uid) {
-          throw new Error('เวลาที่เลือกทับกับผู้อื่น')
-        }
-      }
-    }
-
-    // ลบ slot เดิม
-    for (const ref of oldSlots) {
-      const ds = await tx.get(ref)
-      if (ds.exists() && ds.get('userId') === uid) {
-        tx.delete(ref)
-      }
-    }
-
-    // เขียน slot ใหม่
-    // เขียน slot ใหม่ (คง bandKey/bandName เดิม)
-for (const [s, e] of iterate5MinSlots(newStart, newEnd)) {
-  const ref = doc(db, `slots/${slotId(dayKey, s)}`)
-  tx.set(ref, {
-    userId: uid,
-    bandKey: b.bandKey || makeBandKey(b.bandName || ''),
-    bandName: b.bandName,
-    dayKey,
-    startAt: Timestamp.fromDate(s),
-    endAt:   Timestamp.fromDate(e),
-    groupId: b.groupId || `${uid}_${dayKey}`,
-    createdAt: serverTimestamp(),
-  })
-}
-
-// อัปเดตหัวบิล
-tx.set(bookingRef, {
-  ...b,
-  bandKey: b.bandKey || makeBandKey(b.bandName || ''),
-  startAt: Timestamp.fromDate(newStart),
-  endAt:   Timestamp.fromDate(newEnd),
-  updatedAt: serverTimestamp(),
-}, { merge: true })
-
-
-    // อัปเดตหัวบิล
-    tx.set(bookingRef, {
-      ...b,
-      startAt: newStart,
-      endAt: newEnd,
-      updatedAt: serverTimestamp(),
-    }, { merge: true })
-  })
+    }, { merge: true });
+  });
 }
