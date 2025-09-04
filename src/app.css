@@ -437,3 +437,89 @@ tbody tr:hover{ background:#0e1422 }
   width: 48px; height: 48px; border-radius: 16px; object-fit: cover;
   border: 1px solid rgba(34,48,85,.9);
 }
+
+/* ===== NAVBAR – Glass/Pro Look (header only) ===== */
+.site-header{
+  position: sticky; top: 0; z-index: 60;
+  background:
+    radial-gradient(1200px 200px at 50% -80px, rgba(120,150,255,0.08), transparent),
+    linear-gradient(180deg, rgba(15,17,24,0.88), rgba(15,17,24,0.70));
+  backdrop-filter: saturate(140%) blur(10px);
+  -webkit-backdrop-filter: saturate(140%) blur(10px);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  overflow: visible; /* ให้ popover โผล่ได้ */
+}
+.header-inner{
+  max-width: 1120px; margin: 0 auto;
+  padding: 12px 20px; gap: 16px;
+  display: flex; align-items: center;
+  min-height: 64px;
+}
+.header-spacer{ flex: 1; }
+
+/* Brand */
+.brand{ display:flex; align-items:center; gap:12px; text-decoration:none; }
+.brand-mark{
+  width: 36px; height: 36px; border-radius: 12px;
+  background: conic-gradient(from 210deg, #7c8cff, #7df, #a88bff, #7c8cff);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.25), 0 12px 28px rgba(77,108,255,.25);
+}
+.brand-text{ display:flex; flex-direction:column; line-height:1; }
+.brand-name{ font-weight:700; letter-spacing:.2px; font-size:18px; }
+.brand-sub{ font-size:12px; opacity:.6; }
+
+/* Actions */
+.header-actions{ display:flex; align-items:center; gap:12px; }
+.auth-bar{ display:flex; align-items:center; gap:10px; position:relative; }
+
+/* User pill */
+.user-pill{
+  display:flex; align-items:center; gap:8px;
+  padding:6px 10px; border-radius:999px;
+  background: rgba(255,255,255,.06);
+  border: 1px solid rgba(255,255,255,.08);
+}
+.avatar-xxs{ width:20px; height:20px; border-radius:50%; object-fit:cover; }
+
+/* IG link */
+.ig-link{ color:inherit; opacity:.75; text-decoration:none; }
+.ig-link:hover{ opacity:1; }
+
+/* Mac-like hairline under header */
+.header-border{ height:1px; background:linear-gradient(90deg,transparent,rgba(255,255,255,.08),transparent); }
+
+/* ---------- EmailLogin in header: make it a floating popover on tablet/desktop ---------- */
+.site-header .auth-bar .card{
+  border-radius:16px; margin:0;
+  background: rgba(22,26,35,.92);
+  border:1px solid rgba(255,255,255,.08);
+  box-shadow: 0 12px 40px rgba(0,0,0,.45);
+}
+@media (min-width: 768px){
+  .site-header .auth-bar{ padding-right:6px; }
+  .site-header .auth-bar .card{
+    position:absolute; top: calc(100% + 12px); right:0;
+    width: min(520px, 92vw); /* ไม่ดันความสูง header */
+  }
+  /* ซ่อนคำว่า "หรือ" ใน header ให้ดูสะอาดขึ้น */
+  .site-header .auth-bar .muted{ display:none; }
+}
+
+/* ---------- Buttons in header: tighter & premium ---------- */
+.site-header .btn.primary{
+  border-radius:12px; padding:10px 14px; font-weight:600;
+  box-shadow: 0 6px 16px rgba(56,118,255,.35);
+}
+.site-header .btn.ghost, .site-header .btn.subtle{
+  border-radius:12px; padding:10px 12px;
+}
+
+/* ---------- Responsive tweaks ---------- */
+@media (max-width: 767px){
+  .header-inner{ padding:10px 14px; min-height:56px; }
+  .brand-mark{ width:32px; height:32px; border-radius:10px; }
+  .brand-name{ font-size:16px; }
+  .brand-sub{ font-size:11px; }
+  .ig-link{ display:none; } /* เคลียร์ความแน่นบนจอเล็ก */
+}
+
