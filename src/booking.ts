@@ -52,6 +52,48 @@ export async function getUserDayKeys(db: any, uid: string, dayKeys: string[]){
   }))
   return results.filter(Boolean) as string[]
 }
+// ลบการจองของตัวเอง (วันเดิมเท่านั้น) — ลบได้เฉพาะปัจจุบัน/อนาคต
+export async function deleteMyBooking(db: any, params: {
+  uid: string,
+  dayKey: string,
+}) {
+  const { uid, dayKey } = params;
+  const bookingRef = doc(db, `users/${uid}/bookings/${dayKey}`);
+
+  const today0 = new Date(); today0.setHours(0,0,0,0);
+
+  await runTransaction(db, async (tx) => {
+    const snap = await tx.get(bookingRef);
+    if (!snap.exists()) throw new Error('ไม่พบการจอง');
+
+    const b: any = snap.data();
+
+    // เจ้าของเท่านั้น
+    if ((b.userId || uid) !== uid) throw new Error('ไม่มีสิทธิ์ลบการจองนี้');
+
+    const oldStart: Date = b.startAt?.toDate ? b.startAt.toDate() : new Date(b.startAt);
+    const oldEnd: Date   = b.endAt?.toDate   ? b.endAt.toDate()   : new Date(b.endAt);
+
+    // ห้ามลบอดีต: ถ้าจบไปแล้ว หรือต่ำกว่าวันนี้
+    if (oldEnd.getTime() < Date.now() || oldStart < today0) {
+      throw new Error('ไม่สามารถลบการจองที่ผ่านมาแล้ว');
+    }
+
+    // ลบ slot ทั้งหมดของช่วงนั้น
+    for (const [s] of iterate5MinSlots(oldStart, oldEnd)) {
+      const ref = doc(db, `slots/${slotId(dayKey, s)}`);
+      const ds = await tx.get(ref);
+      if (ds.exists() && ds.get('userId') === uid) {
+        tx.delete(ref);
+      }
+    }
+
+    // ลบหัวบิล
+    tx.delete(bookingRef);
+  });
+
+  return { ok: true, dayKey };
+}
 
 // ✅ เวอร์ชันใหม่: ใช้ Transaction แทน Batch.create
 export async function createBookingClient({
