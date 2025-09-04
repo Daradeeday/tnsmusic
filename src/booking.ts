@@ -1,9 +1,41 @@
 // แก้ import: เอา writeBatch ออก ใส่ runTransaction เข้าไป
 import {
   doc, getDoc, runTransaction, serverTimestamp, Timestamp,
-  collection, query, where, getDocs ,collectionGroup
+  collection, query, where, getDocs ,collectionGroup 
 } from 'firebase/firestore'
 import { format } from 'date-fns'
+
+// ===== Canonical band names (ปรับเพิ่มได้)
+// ===== Canonical band mapping =====
+const BAND_LABELS: Record<string, string> = {
+  'sinnoble': 'Sinnoble',
+  'flychicken': 'flychicken',
+  'ส้นตีน': 'ส้นตีน',
+  'poet': 'POET',
+  'zhyphilis': 'zhyphilis',
+};
+
+export function makeBandKey(raw: string) {
+  return (raw || '')
+    .toString()
+    .normalize('NFC')      // แก้ปัญหาโค้ดจุด/สระภาษาไทย
+    .trim()
+    .replace(/\s+/g, ' ')  // ช่องว่างหลายอัน -> อันเดียว
+    .toLowerCase();
+}
+export function canonicalBand(raw: string) {
+  const key = makeBandKey(raw);
+  const label = BAND_LABELS[key] ?? (raw || '').toString().trim();
+  return { bandKey: key, bandName: label };
+}
+// แทนทั้งสองตัวด้วยตัวนี้ตัวเดียว
+function toDateAny(v: any): Date {
+  return v?.toDate ? v.toDate() : (v instanceof Date ? v : new Date(v))
+}
+
+
+
+
 
 export function* iterate5Min(start: Date, end: Date){
   for (let t = new Date(start); t < end; t = new Date(t.getTime() + 5*60*1000)) {
@@ -25,7 +57,7 @@ export async function getUserDayKeys(db: any, uid: string, dayKeys: string[]){
 export async function createBookingClient({
   db, uid, bandName, start, end
 }: { db:any; uid:string; bandName:string; start:Date; end:Date; }){
-  // ตรวจพื้นฐาน
+
   const ms = end.getTime() - start.getTime()
   if (ms <= 0) throw new Error('เวลาสิ้นสุดต้องหลังเวลาเริ่ม')
   if (ms > 3*60*60*1000) throw new Error('ระยะเวลาเกิน 3 ชั่วโมง')
@@ -47,44 +79,47 @@ export async function createBookingClient({
   const headRef = doc(db, 'users', uid, 'bookings', dayKey)
   const groupId = `${uid}_${dayKey}`
 
-  // เตรียมสล็อตทั้งหมดก่อนเข้า transaction
+  // ✅ ทำชื่อวงเป็นมาตรฐาน + ได้ bandKey
+  const { bandKey, bandName: bandLabel } = canonicalBand(bandName)
+
+  // เตรียมสล็อต
   const slots = Array.from(iterate5Min(start, end)).map(t => ({
     t,
     ref: doc(db, 'slots', `${dayKey}_${format(t,'HHmm')}`)
   }))
 
   await runTransaction(db, async (tx) => {
-    // 1) ห้ามมีหัวบิลวันเดียวกันอยู่แล้ว
+    // 1) วันเดียวกันมีหัวบิลอยู่แล้วห้ามซ้ำ
     const headSnap = await tx.get(headRef)
-    if (headSnap.exists()) {
-      throw new Error('วันนี้คุณจองไว้แล้ว')
-    }
+    if (headSnap.exists()) throw new Error('วันนี้คุณจองไว้แล้ว')
 
-    // 2) ตรวจสล็อตทุกช่อง ห้ามซ้ำ
+    // 2) สล็อตห้ามทับ
     for (const s of slots) {
       const snap = await tx.get(s.ref)
-      if (snap.exists()) {
-        throw new Error('ช่วงเวลานี้ถูกจองแล้ว')
-      }
+      if (snap.exists()) throw new Error('ช่วงเวลานี้ถูกจองแล้ว')
     }
 
-    // 3) สร้างหัวบิล
+    // 3) สร้างหัวบิล (เก็บ bandKey/bandName)
     tx.set(headRef, {
       userId: uid,
-      bandName, dayKey,
+      bandKey,
+      bandName: bandLabel,
+      dayKey,
+      groupId,
       startAt: Timestamp.fromDate(start),
       endAt:   Timestamp.fromDate(end),
       createdAt: serverTimestamp(),
     })
 
-    // 4) สร้างสล็อตทั้งหมด (5 นาที/ช่อง)
+    // 4) สร้างสล็อตพร้อม bandKey/bandName
     for (const s of slots) {
       tx.set(s.ref, {
         dayKey,
         startAt: Timestamp.fromDate(s.t),
         endAt:   Timestamp.fromDate(new Date(s.t.getTime()+5*60*1000)),
         userId:  uid,
-        bandName,
+        bandKey,
+        bandName: bandLabel,
         groupId,
         createdAt: serverTimestamp(),
       })
@@ -93,6 +128,7 @@ export async function createBookingClient({
 
   return { ok:true, dayKey, groupId }
 }
+
 
 // (คงเวอร์ชันนี้ไว้) อ่านตารางจาก 'slots' → ไม่ต้องสร้าง index
 export async function listBookingsForDay(db: any, dayKey: string){
@@ -117,11 +153,12 @@ export async function listBookingsForDay(db: any, dayKey: string){
 
 
 export type Leader = {
-  userId: string
-  bandName?: string
+  bandKey: string
+  bandName: string
   minutes: number
   sessions: number
 }
+
 
 function toDate(ts: any): Date {
   return ts?.toDate ? ts.toDate() : (ts instanceof Date ? ts : new Date(ts))
@@ -138,50 +175,54 @@ export function formatDuration(mins: number) {
  * - พยายามใช้ collectionGroup('bookings') ก่อน (เร็ว/เบา)
  * - ถ้าเครื่องผู้ใช้ยังไม่รองรับ/ติด index → fallback ไปที่คอลเลกชัน 'slots' (คิด 5 นาทีต่อสล็อต)
  */
-export async function listTopUsersByMinutes(db: any, limit?: number) {
+export async function listTopUsersByMinutes(db: any, limitN = 100) {
   const agg = new Map<string, Leader>()
 
   try {
-    // วิธีหลัก: รวมจากหัวบิลของทุกคน (ไม่ใส่ where/order จึงไม่ต้อง composite index)
+    // รวมจากหัวบิลของทุกคน (ไม่ต้อง composite index)
     const snap = await getDocs(collectionGroup(db, 'bookings'))
     snap.forEach((docSnap) => {
       const d: any = docSnap.data()
-      const s = toDate(d.startAt)
-      const e = toDate(d.endAt)
-      const min = Math.max(0, Math.round((e.getTime() - s.getTime()) / 60000))
-      const u = d.userId || 'unknown'
-      const cur = agg.get(u) || { userId: u, bandName: d.bandName, minutes: 0, sessions: 0 }
-      cur.minutes += min
+      const key = d.bandKey || makeBandKey(d.bandName || '')
+      if (!key) return
+      const name = d.bandName || canonicalBand(d.bandName || '').bandName
+
+      const s = toDateAny(d.startAt)
+      const e = toDateAny(d.endAt)
+      const mins = Math.max(0, Math.round((e.getTime() - s.getTime()) / 60000))
+
+      const cur = agg.get(key) || { bandKey: key, bandName: name, minutes: 0, sessions: 0 }
+      cur.minutes += mins
       cur.sessions += 1
-      if (d.bandName && !cur.bandName) cur.bandName = d.bandName
-      agg.set(u, cur)
+      if (!agg.has(key)) agg.set(key, cur)
     })
-  } catch (_e) {
-    // วิธีสำรอง: รวมจาก 'slots' (เอกสารละ 5 นาที) + นับ sessions จาก groupId
-    const groupsByUser = new Map<string, Set<string>>()
+  } catch {
+    // Fallback: รวมจาก slots (เอกสารละ 5 นาที) + นับ sessions จาก groupId
+    const groupsByBand = new Map<string, Set<string>>()
     const sSnap = await getDocs(collection(db, 'slots'))
     sSnap.forEach((docSnap) => {
       const d: any = docSnap.data()
-      const u = d.userId || 'unknown'
-      const cur = agg.get(u) || { userId: u, bandName: d.bandName, minutes: 0, sessions: 0 }
+      const key = d.bandKey || makeBandKey(d.bandName || '')
+      if (!key) return
+      const name = d.bandName || canonicalBand(d.bandName || '').bandName
+
+      const cur = agg.get(key) || { bandKey: key, bandName: name, minutes: 0, sessions: 0 }
       cur.minutes += 5
-      if (d.bandName && !cur.bandName) cur.bandName = d.bandName
-      agg.set(u, cur)
+      agg.set(key, cur)
 
       const g = d.groupId || `${d.userId || 'u'}_${d.dayKey || ''}`
-      const set = groupsByUser.get(u) || new Set<string>()
+      const set = groupsByBand.get(key) || new Set<string>()
       set.add(g)
-      groupsByUser.set(u, set)
+      groupsByBand.set(key, set)
     })
-    // เติมจำนวน sessions จาก groupId ที่ไม่ซ้ำ
-    for (const [u, info] of agg) {
-      info.sessions = groupsByUser.get(u)?.size || info.sessions
+    for (const [k, info] of agg) {
+      info.sessions = groupsByBand.get(k)?.size || info.sessions
     }
   }
 
-  const arr = Array.from(agg.values()).sort((a, b) => b.minutes - a.minutes)
-  return typeof limit === 'number' ? arr.slice(0, limit) : arr
+  return Array.from(agg.values()).sort((a, b) => b.minutes - a.minutes).slice(0, limitN)
 }
+
 
 // === Stats & Booking helpers (ต่อท้ายไฟล์เดิม) ===
 
@@ -285,18 +326,30 @@ export async function updateBookingTime(db: any, params: {
     }
 
     // เขียน slot ใหม่
-    for (const [s, e] of iterate5MinSlots(newStart, newEnd)) {
-      const ref = doc(db, `slots/${slotId(dayKey, s)}`)
-      tx.set(ref, {
-        userId: uid,
-        bandName: b.bandName,
-        dayKey,
-        startAt: s,
-        endAt: e,
-        groupId: b.groupId || `${uid}_${dayKey}`,
-        createdAt: serverTimestamp(),
-      })
-    }
+    // เขียน slot ใหม่ (คง bandKey/bandName เดิม)
+for (const [s, e] of iterate5MinSlots(newStart, newEnd)) {
+  const ref = doc(db, `slots/${slotId(dayKey, s)}`)
+  tx.set(ref, {
+    userId: uid,
+    bandKey: b.bandKey || makeBandKey(b.bandName || ''),
+    bandName: b.bandName,
+    dayKey,
+    startAt: Timestamp.fromDate(s),
+    endAt:   Timestamp.fromDate(e),
+    groupId: b.groupId || `${uid}_${dayKey}`,
+    createdAt: serverTimestamp(),
+  })
+}
+
+// อัปเดตหัวบิล
+tx.set(bookingRef, {
+  ...b,
+  bandKey: b.bandKey || makeBandKey(b.bandName || ''),
+  startAt: Timestamp.fromDate(newStart),
+  endAt:   Timestamp.fromDate(newEnd),
+  updatedAt: serverTimestamp(),
+}, { merge: true })
+
 
     // อัปเดตหัวบิล
     tx.set(bookingRef, {

@@ -10,7 +10,7 @@ import {
   signOut,
   browserPopupRedirectResolver ,
 } from "firebase/auth";
-import { getMyUpcomingBookings, updateBookingTime ,createBookingClient, listBookingsForDay, listTopUsersByMinutes, formatDuration } from "./booking";
+import { canonicalBand ,getMyUpcomingBookings, updateBookingTime ,createBookingClient, listBookingsForDay, listTopUsersByMinutes, formatDuration  } from "./booking";
 import { buildGCalUrl } from "./calendar";
 import { format } from "date-fns";
 
@@ -410,16 +410,38 @@ useEffect(() => {
 }
 
     setLoading(true);
-    try {
-      await createBookingClient({ db, uid: user.uid, bandName: bandName.trim(), start: startDate, end: endDate });
-      toast.success("จองสำเร็จ", `${bandName} เวลา ${startDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`);
-      setRows((await listBookingsForDay(db, dayKey)) as any);
-    } catch (e: any) {
-      // ส่งเหตุผลจริงให้ผู้ใช้เข้าใจได้
-      toast.error("จองไม่สำเร็จ", e?.message || String(e));
-    } finally {
-      setLoading(false);
-    }
+try {
+  // --- ทำชื่อวงให้เป็นมาตรฐานเดียวกันก่อนส่งไปบันทึก ---
+  const { bandName: canonLabel } = canonicalBand(bandName);
+
+  await createBookingClient({
+    db,
+    uid: user.uid,
+    bandName: canonLabel,      // ส่งชื่อมาตรฐานไปเก็บ
+    start: startDate,
+    end: endDate,
+  });
+
+  // ใช้ชื่อมาตรฐานเดียวกันใน toast ด้วย
+  toast.success(
+    "จองสำเร็จ",
+    `${canonLabel} เวลา ${startDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+  );
+
+  setRows((await listBookingsForDay(db, dayKey)) as any);
+} catch (e: any) {
+  // แปลง error ให้เข้าใจง่าย (โค้ดเดิมของคุณยังใช้ได้)
+  const m = String(e?.message || "");
+  let friendly = m;
+  if (m.includes("already-exists")) friendly = "ช่วงเวลานี้ถูกจองแล้ว";
+  else if (m.includes("failed-precondition")) friendly = m; // เงื่อนไขไม่ผ่าน (เกิน 3 ชม., เว้น 2 วัน, ฯลฯ)
+  else if (m.includes("unauthenticated")) friendly = "กรุณาเข้าสู่ระบบก่อน";
+
+  toast.error("จองไม่สำเร็จ", friendly);
+} finally {
+  setLoading(false);
+}
+
   }
 
   const minDate = todayLocal();
@@ -620,7 +642,7 @@ useEffect(() => {
         const initials = (name || "?").trim().charAt(0).toUpperCase();
 
         return (
-          <li key={p.userId} className={`stat-item ${i === 0 ? "highlight" : ""}`}>
+          <li key={p.bandKey} className={`stat-item ${i === 0 ? "highlight" : ""}`}>
             <div className="stat-left">
               <div className={`stat-avatar ${i === 0 ? "glow" : ""}`} aria-hidden>
                 <span>{initials}</span>
