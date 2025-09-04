@@ -741,6 +741,7 @@ try {
                   <tr key={b.id}>
                     <td>{b.dayKey}</td>
                     <td>{hm} – {pad2(e.getHours())}:{pad2(e.getMinutes())}</td>
+                    
                     <td>
                       {editingId === b.id ? (
                         <div style={{display:'flex', gap:8, alignItems:'center', flexWrap:'wrap'}}>
@@ -762,30 +763,7 @@ try {
                           }}>บันทึก</button>
                           <button className="btn ghost" onClick={()=>setEditingId(null)}>ยกเลิก</button>
                         </div>
-                      ) : (
-                        <button className="btn link" disabled={!canEdit} onClick={()=>{
-                          setEditingId(b.id); setEditStart(hm); setEditDur(dur)
-                        }}>
-                          {canEdit ? 'แก้เวลาจอง' : 'แก้ไม่ได้ (อดีต)'}
-                        </button>
-                      )}
-                      <td>
-  {editingId === b.id ? (
-    /* ... บล็อกแก้ไขเดิม ... */
-  ) : (
-    <div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
-      <button
-        className="btn link"
-        disabled={!canEdit}
-        onClick={() => { setEditingId(b.id); setEditStart(hm); setEditDur(dur); }}
-      >
-        {canEdit ? 'แก้เวลาจอง' : 'แก้ไม่ได้ (อดีต)'}
-      </button>
-                    </td>
-                    <td>
-  {editingId === b.id ? (
-    /* ... บล็อกแก้ไขเดิม ... */
-  ) : (
+                      ) :  (
     <div style={{display:'flex', gap:8, flexWrap:'wrap'}}>
       <button
         className="btn link"
@@ -829,12 +807,15 @@ try {
     </div>
   )}
 </td>
-
                   </tr>
+                  
                 )
               })}
+              
             </tbody>
+            
           </table>
+          
         </div>
       )}
     </>
